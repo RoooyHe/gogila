@@ -1,0 +1,10 @@
+server:
+  port: 7099
+
+spring:
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/dashboard
+
+  main:
+    web-application-type: reactive

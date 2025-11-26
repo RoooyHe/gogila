@@ -165,6 +165,29 @@ const canvasOffset = ref({ x: 0, y: 0 });  // 画布偏移量
 const panStart = ref({ x: 0, y: 0 });      // 开始平移时的鼠标位置
 const isPanning = ref(false);        // 正在平移中
 
+// ==================== 组件 Resize 模式 ====================
+interface ResizeState {
+  widgetId: string | null;
+  handle: 'tl' | 'tr' | 'bl' | 'br' | 't' | 'b' | 'l' | 'r' | null;  // resize handle 位置
+  startX: number;
+  startY: number;
+  startWidth: number;
+  startHeight: number;
+  startLeft: number;
+  startTop: number;
+}
+
+const resizeState = reactive<ResizeState>({
+  widgetId: null,
+  handle: null,
+  startX: 0,
+  startY: 0,
+  startWidth: 0,
+  startHeight: 0,
+  startLeft: 0,
+  startTop: 0
+});
+
 function zoomIn() {
   zoom.value = Math.min(MAX_ZOOM, zoom.value + ZOOM_STEP);
 }
@@ -303,6 +326,96 @@ function onCanvasMouseMove(event: MouseEvent) {
  */
 function onCanvasMouseUp() {
   isPanning.value = false;
+}
+
+// ==================== Resize 处理 ====================
+
+/**
+ * 开始 Resize 组件
+ */
+function onResizeStart(event: MouseEvent, widgetId: string, handle: ResizeState['handle']) {
+  event.stopPropagation();
+  event.preventDefault();
+
+  const widget = screen.widgets.find(w => w.id === widgetId);
+  if (!widget) return;
+
+  resizeState.widgetId = widgetId;
+  resizeState.handle = handle;
+  resizeState.startX = event.clientX;
+  resizeState.startY = event.clientY;
+  resizeState.startWidth = widget.position.w;
+  resizeState.startHeight = widget.position.h;
+  resizeState.startLeft = widget.position.x;
+  resizeState.startTop = widget.position.y;
+}
+
+/**
+ * 处理 Resize 拖动
+ */
+function onCanvasResizeMove(event: MouseEvent) {
+  if (!resizeState.widgetId || !resizeState.handle) return;
+
+  const widget = screen.widgets.find(w => w.id === resizeState.widgetId);
+  if (!widget) return;
+
+  const deltaX = event.clientX - resizeState.startX;
+  const deltaY = event.clientY - resizeState.startY;
+
+  // 根据 zoom 调整偏移
+  const scaledDeltaX = deltaX / zoom.value;
+  const scaledDeltaY = deltaY / zoom.value;
+
+  const handle = resizeState.handle;
+  let newX = resizeState.startLeft;
+  let newY = resizeState.startTop;
+  let newW = resizeState.startWidth;
+  let newH = resizeState.startHeight;
+
+  // 计算新的宽高和位置
+  if (handle.includes('l')) {
+    // 左边拖动
+    newX = snapToGrid(resizeState.startLeft + scaledDeltaX);
+    newW = resizeState.startWidth - (newX - resizeState.startLeft);
+  }
+  if (handle.includes('r')) {
+    // 右边拖动
+    newW = snapToGrid(resizeState.startWidth + scaledDeltaX);
+  }
+  if (handle.includes('t')) {
+    // 顶部拖动
+    newY = snapToGrid(resizeState.startTop + scaledDeltaY);
+    newH = resizeState.startHeight - (newY - resizeState.startTop);
+  }
+  if (handle.includes('b')) {
+    // 底部拖动
+    newH = snapToGrid(resizeState.startHeight + scaledDeltaY);
+  }
+
+  // 最小尺寸限制
+  const MIN_SIZE = 40;
+  newW = Math.max(MIN_SIZE, newW);
+  newH = Math.max(MIN_SIZE, newH);
+
+  // 限制在 canvas 范围内
+  const canvasWidth = screen.canvasConfig?.width || 1920;
+  const canvasHeight = screen.canvasConfig?.height || 1080;
+  newX = Math.max(0, Math.min(newX, canvasWidth - newW));
+  newY = Math.max(0, Math.min(newY, canvasHeight - newH));
+
+  // 更新组件
+  widget.position.x = newX;
+  widget.position.y = newY;
+  widget.position.w = newW;
+  widget.position.h = newH;
+}
+
+/**
+ * 结束 Resize
+ */
+function onCanvasResizeEnd() {
+  resizeState.widgetId = null;
+  resizeState.handle = null;
 }
 
 // 画布 DOM 引用，用于计算 drop 坐标
@@ -623,7 +736,7 @@ async function saveScreen() {
             <div class="zoom-display">{{ Math.round(zoom * 100) }}%</div>
             <button class="zoom-btn" @click="zoomIn" title="放大 (Ctrl+滚轮)">+</button>
             <button class="zoom-btn" @click="resetZoom" title="重置缩放">100%</button>
-            <button class="zoom-btn" @click="fitToScreen" title="适应屏幕">⊡</button>
+            <button class="zoom-btn" @click="fitToScreen" title="适应屏幕">自适应</button>
           </div>
 
           <!-- 分割线 -->
@@ -631,7 +744,7 @@ async function saveScreen() {
 
           <!-- 其他按钮 -->
           <button class="btn-test" @click="testAllWidgetData" :disabled="isTesting">
-            {{ isTesting ? '测试中...' : '🧪 全局测试' }}
+            {{ isTesting ? '测试中...' : '刷新全部接口数据' }}
           </button>
           <button @click="saveScreen" :disabled="saving">
             {{ saving ? '保存中...' : '保存' }}
@@ -644,7 +757,7 @@ async function saveScreen() {
 
       <div
           class="canvas-scroll-container"
-          :class="{ 'pan-mode': canvasPanMode, 'panning': isPanning }"
+          :class="{ 'pan-mode': canvasPanMode, 'panning': isPanning, 'resizing': resizeState.widgetId }"
           @dragover="onCanvasDragOver"
           @drop="onCanvasDrop"
           @wheel="onCanvasWheel"
@@ -653,6 +766,14 @@ async function saveScreen() {
           @mouseup="onCanvasMouseUp"
           @mouseleave="onCanvasMouseUp"
       >
+        <!-- 处理全局 resize 事件 -->
+        <div
+            v-if="resizeState.widgetId"
+            class="resize-handler"
+            @mousemove="onCanvasResizeMove"
+            @mouseup="onCanvasResizeEnd"
+            @mouseleave="onCanvasResizeEnd"
+        ></div>
         <div
             class="designer-canvas"
             :style="{
@@ -728,6 +849,21 @@ async function saveScreen() {
           <div v-if="dragState.widgetId === w.id" class="position-hint">
             {{ w.position.x }}, {{ w.position.y }}
           </div>
+
+          <!-- Resize Handles（选中时显示） -->
+          <template v-if="w.id === selectedWidgetId">
+            <!-- 四个角 -->
+            <div class="resize-handle resize-handle-tl" @mousedown.stop="onResizeStart($event, w.id, 'tl')" title="左上角"></div>
+            <div class="resize-handle resize-handle-tr" @mousedown.stop="onResizeStart($event, w.id, 'tr')" title="右上角"></div>
+            <div class="resize-handle resize-handle-bl" @mousedown.stop="onResizeStart($event, w.id, 'bl')" title="左下角"></div>
+            <div class="resize-handle resize-handle-br" @mousedown.stop="onResizeStart($event, w.id, 'br')" title="右下角"></div>
+
+            <!-- 四条边中点 -->
+            <div class="resize-handle resize-handle-t" @mousedown.stop="onResizeStart($event, w.id, 't')" title="上边"></div>
+            <div class="resize-handle resize-handle-b" @mousedown.stop="onResizeStart($event, w.id, 'b')" title="下边"></div>
+            <div class="resize-handle resize-handle-l" @mousedown.stop="onResizeStart($event, w.id, 'l')" title="左边"></div>
+            <div class="resize-handle resize-handle-r" @mousedown.stop="onResizeStart($event, w.id, 'r')" title="右边"></div>
+          </template>
         </div>
         </div>
       </div>
@@ -882,9 +1018,7 @@ async function saveScreen() {
                   class="form-input"
                   placeholder="/api/data/..."
               />
-              <button class="btn-test-widget" @click="testWidgetData" title="测试此接口">
-                🧪
-              </button>
+              <button class="btn-test-widget" @click="testWidgetData" title="测试此接口"/>
             </div>
           </div>
 
@@ -917,16 +1051,16 @@ async function saveScreen() {
     <!-- 模式指示器浮窗 -->
     <div class="mode-indicator" :class="{ active: canvasPanMode }">
       <span v-if="canvasPanMode" class="mode-text">
-        {{ isPanning ? '📌 平移中...' : '✋ 按住拖动平移' }}
+        {{ isPanning ? '移动中...' : '按住拖动移动' }}
       </span>
-      <span v-else class="mode-text">📍 选择模式</span>
+      <span v-else class="mode-text">按住空格移动画布</span>
     </div>
 
     <!-- 测试结果面板 -->
     <div v-if="showTestResults" class="test-results-modal">
       <div class="test-results-content">
         <div class="test-results-header">
-          <h3>🧪 数据接口测试结果</h3>
+          <h3>数据接口测试结果</h3>
           <button class="close-btn" @click="closeTestResults">✕</button>
         </div>
 
@@ -940,7 +1074,7 @@ async function saveScreen() {
               <div class="test-item-header">
                 <span class="test-type">{{ result.widgetType }}</span>
                 <span class="test-status" :class="{ success: result.status === 'success', error: result.status === 'error', pending: result.status === 'pending' }">
-                  {{ result.status === 'success' ? '✅ 成功' : result.status === 'error' ? '❌ 失败' : '⏳ 测试中' }}
+                  {{ result.status === 'success' ? '成功' : result.status === 'error' ? '失败' : '测试中' }}
                 </span>
               </div>
 
@@ -1312,6 +1446,94 @@ main.designer-canvas-wrapper {
   border: 1px solid #0ea5e9;
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* Resize Handles */
+.resize-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #0ea5e9;
+  border: 1px solid #06b6d4;
+  border-radius: 2px;
+  z-index: 101;
+  opacity: 0.8;
+  transition: all 0.2s;
+}
+
+.resize-handle:hover {
+  background: #06b6d4;
+  opacity: 1;
+  box-shadow: 0 0 8px rgba(14, 165, 233, 0.6);
+  width: 10px;
+  height: 10px;
+  margin-left: -1px;
+  margin-top: -1px;
+}
+
+/* 四个角 */
+.resize-handle-tl {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+
+.resize-handle-tr {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+
+.resize-handle-bl {
+  bottom: -4px;
+  left: -4px;
+  cursor: nesw-resize;
+}
+
+.resize-handle-br {
+  bottom: -4px;
+  right: -4px;
+  cursor: nwse-resize;
+}
+
+/* 四条边 */
+.resize-handle-t {
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.resize-handle-b {
+  bottom: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.resize-handle-l {
+  top: 50%;
+  left: -4px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.resize-handle-r {
+  top: 50%;
+  right: -4px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+/* 全局 Resize 事件捕获层 */
+.resize-handler {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  cursor: grabbing;
 }
 
 /* 右侧属性面板 */
